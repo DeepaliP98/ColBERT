@@ -60,9 +60,9 @@ class Queries:
             for line in f:
                 qa = ujson.loads(line)
 
-                assert qa['qid'] not in self.data
-                self.data[qa['qid']] = qa['question']
-                self._qas[qa['qid']] = qa
+                assert str(qa['qid']) not in self.data
+                self.data[str(qa['qid'])] = qa['question']
+                self._qas[str(qa['qid'])] = qa
 
         return self.data
 

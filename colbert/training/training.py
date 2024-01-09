@@ -3,6 +3,7 @@ import torch
 import random
 import torch.nn as nn
 import numpy as np
+import tqdm
 
 from transformers import AdamW, get_linear_schedule_with_warmup
 from colbert.infra import ColBERTConfig
@@ -61,9 +62,9 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None):
 
     scheduler = None
     if config.warmup is not None:
-        print(f"#> LR will use {config.warmup} warmup steps and linear decay over {config.maxsteps} steps.")
-        scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=config.warmup,
-                                                    num_training_steps=config.maxsteps)
+        print(f"#> LR will use {config.warmup} warmup steps and linear decay over {len(reader.triples)*config.epochs} steps.")
+        scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=config.warmup*len(reader.triples)//config.bsize,
+                                                    num_training_steps=len(reader.triples)*config.epochs//config.bsize)
 
     warmup_bert = config.warmup_bert
     if warmup_bert is not None:
@@ -73,73 +74,86 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None):
     labels = torch.zeros(config.bsize, dtype=torch.long, device=DEVICE)
 
     start_time = time.time()
+    count=0
+
+
+
     train_loss = None
     train_loss_mu = 0.999
 
     start_batch_idx = 0
 
-    # if config.resume:
-    #     assert config.checkpoint is not None
-    #     start_batch_idx = checkpoint['batch']
+        # if config.resume:
+        #     assert config.checkpoint is not None
+        #     start_batch_idx = checkpoint['batch']
 
-    #     reader.skip_to_batch(start_batch_idx, checkpoint['arguments']['bsize'])
+        #     reader.skip_to_batch(start_batch_idx, checkpoint['arguments']['bsize'])
 
-    for batch_idx, BatchSteps in zip(range(start_batch_idx, config.maxsteps), reader):
-        if (warmup_bert is not None) and warmup_bert <= batch_idx:
-            set_bert_grad(colbert, True)
-            warmup_bert = None
+    count = 0        
+    for epoch in range(config.epochs):
+        print("Epoch number:",epoch)
+        reader.reset()
+        for batch_idx, BatchSteps in zip(range(start_batch_idx, len(reader.triples)*config.epochs//config.bsize), reader):
+            count+=1
+            if (warmup_bert is not None) and warmup_bert <= batch_idx:
+                set_bert_grad(colbert, True)
+                warmup_bert = None
 
-        this_batch_loss = 0.0
+            this_batch_loss = 0.0
 
-        for batch in BatchSteps:
-            with amp.context():
-                try:
-                    queries, passages, target_scores = batch
-                    encoding = [queries, passages]
-                except:
-                    encoding, target_scores = batch
-                    encoding = [encoding.to(DEVICE)]
+            for batch in BatchSteps:
+                with amp.context():
+                    try:
+                        queries, passages, target_scores = batch
+                        encoding = [queries, passages]
+                    except:
+                        encoding, target_scores = batch
+                        encoding = [encoding.to(DEVICE)]
 
-                scores = colbert(*encoding)
+                    scores = colbert(*encoding)
 
-                if config.use_ib_negatives:
-                    scores, ib_loss = scores
+                    if config.use_ib_negatives:
+                        scores, ib_loss = scores
 
-                scores = scores.view(-1, config.nway)
+                    scores = scores.view(-1, config.nway)
 
-                if len(target_scores) and not config.ignore_scores:
-                    target_scores = torch.tensor(target_scores).view(-1, config.nway).to(DEVICE)
-                    target_scores = target_scores * config.distillation_alpha
-                    target_scores = torch.nn.functional.log_softmax(target_scores, dim=-1)
+                    if len(target_scores) and not config.ignore_scores:
+                        target_scores = torch.tensor(target_scores).view(-1, config.nway).to(DEVICE)
+                        target_scores = target_scores * config.distillation_alpha
+                        target_scores = torch.nn.functional.log_softmax(target_scores, dim=-1)
 
-                    log_scores = torch.nn.functional.log_softmax(scores, dim=-1)
-                    loss = torch.nn.KLDivLoss(reduction='batchmean', log_target=True)(log_scores, target_scores)
-                else:
-                    loss = nn.CrossEntropyLoss()(scores, labels[:scores.size(0)])
+                        log_scores = torch.nn.functional.log_softmax(scores, dim=-1)
+                        loss = torch.nn.KLDivLoss(reduction='batchmean', log_target=True)(log_scores, target_scores)
+                    else:
+                        loss = nn.CrossEntropyLoss()(scores, labels[:scores.size(0)])
 
-                if config.use_ib_negatives:
-                    if config.rank < 1:
-                        print('\t\t\t\t', loss.item(), ib_loss.item())
+                    if config.use_ib_negatives:
+                        if config.rank < 1:
+                            #print('\t\t\t\t', loss.item(), ib_loss.item())
+                            pass
 
-                    loss += ib_loss
+                        loss += ib_loss
 
-                loss = loss / config.accumsteps
+                    loss = loss / config.accumsteps
+
+                if config.rank < 1:
+                    #print_progress(scores)
+                    pass
+
+                amp.backward(loss)
+
+                this_batch_loss += loss.item()
+
+            train_loss = this_batch_loss if train_loss is None else train_loss
+            train_loss = train_loss_mu * train_loss + (1 - train_loss_mu) * this_batch_loss
+
+
+            amp.step(colbert, optimizer, scheduler)
 
             if config.rank < 1:
-                print_progress(scores)
-
-            amp.backward(loss)
-
-            this_batch_loss += loss.item()
-
-        train_loss = this_batch_loss if train_loss is None else train_loss
-        train_loss = train_loss_mu * train_loss + (1 - train_loss_mu) * this_batch_loss
-
-        amp.step(colbert, optimizer, scheduler)
-
-        if config.rank < 1:
-            print_message(batch_idx, train_loss)
-            manage_checkpoints(config, colbert, optimizer, batch_idx+1, savepath=None)
+                print_message(batch_idx, train_loss)
+                manage_checkpoints(config, colbert, optimizer, batch_idx+1, savepath=None)
+    print("Total count",count)
 
     if config.rank < 1:
         print_message("#> Done with all triples!")

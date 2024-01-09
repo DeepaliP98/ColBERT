@@ -23,7 +23,7 @@ class RunSettings:
     index_root: str = DefaultVal(None)
     name: str = DefaultVal(timestamp(daydir=True))
 
-    rank: int = DefaultVal(0)
+    rank: int = DefaultVal(1)
     nranks: int = DefaultVal(1)
     amp: bool = DefaultVal(True)
 
@@ -84,7 +84,7 @@ class RunSettings:
 
     @property
     def device_(self):
-        return self.gpus_[self.rank % self.nranks]
+        return 1
 
 
 @dataclass
@@ -126,9 +126,11 @@ class TrainingSettings:
 
     accumsteps: int = DefaultVal(1)
 
-    lr: float = DefaultVal(3e-06)
+    lr: float = DefaultVal(3e-05)
 
     maxsteps: int = DefaultVal(500_000)
+
+    epochs: int = DefaultVal(10)
 
     save_every: int = DefaultVal(None)
 
@@ -143,7 +145,7 @@ class TrainingSettings:
 
     nway: int = DefaultVal(2)
 
-    use_ib_negatives: bool = DefaultVal(False)
+    use_ib_negatives: bool = DefaultVal(True)
 
     reranker: bool = DefaultVal(False)
 
@@ -151,7 +153,7 @@ class TrainingSettings:
 
     ignore_scores: bool = DefaultVal(False)
 
-    model_name: str = DefaultVal(None) # DefaultVal('bert-base-uncased')
+    model_name: str = DefaultVal('colbert-ir/colbertv2.0') # DefaultVal('bert-base-uncased')
 
 @dataclass
 class IndexingSettings:

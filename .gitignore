@@ -5,6 +5,7 @@
 /mlruns/
 /profiler/
 /logs/
+/results/*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -21,3 +22,4 @@ __pycache__/
 # Other
 .vscode
 *.tsv
+
